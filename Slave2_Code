@@ -1,0 +1,142 @@
+#include <esp_now.h>
+#include <WiFi.h>
+#include <FastLED.h>
+
+//  Flame Sensor Configuration
+#define FLAME_SENSOR_COUNT 6
+const int FLAME_SENSOR_PINS[FLAME_SENSOR_COUNT] = {34, 35, 32, 33, 25, 26};
+bool fireDetected[FLAME_SENSOR_COUNT] = {false, false, false, false, false, false};
+
+//  LED Strip Configuration
+#define LED_PIN 13        
+#define NUM_LEDS 30       
+#define LED_TYPE WS2812B  
+#define COLOR_ORDER GRB   
+CRGB leds[NUM_LEDS];
+
+//  LED Grouping & Directions
+int groupDirection[FLAME_SENSOR_COUNT] = {1, -1, 1, -1, 1, -1};  // 1 = Right, -1 = Left
+
+//  ESP-NOW Configuration
+uint8_t masterMAC[] = {0xCC, 0xDB, 0xA7, 0x94, 0x75, 0x08};  
+
+typedef struct {
+    bool fireDetected;
+} message_t;
+message_t messageToSend;
+
+void onDataSent(const uint8_t *mac_addr, esp_now_send_status_t status) {
+    // Debugging for ESP-NOW
+}
+
+void setup() {
+    Serial.begin(115200);
+    WiFi.mode(WIFI_STA);
+
+    //  Setup Flame Sensors
+    for (int i = 0; i < FLAME_SENSOR_COUNT; i++) {
+        pinMode(FLAME_SENSOR_PINS[i], INPUT_PULLUP);
+    }
+
+    //  Initialize LED Strip
+    FastLED.addLeds<LED_TYPE, LED_PIN, COLOR_ORDER>(leds, NUM_LEDS).setCorrection(TypicalLEDStrip);
+    FastLED.setBrightness(200);
+    FastLED.clear();
+    FastLED.show();
+    delay(500);
+
+    //  Initialize ESP-NOW
+    if (esp_now_init() != ESP_OK) {
+        Serial.println("ESP-NOW Initialization Failed!");
+        return;
+    }
+
+    esp_now_register_send_cb(onDataSent);
+    esp_now_peer_info_t peerInfo = {};
+    memcpy(peerInfo.peer_addr, masterMAC, 6);
+    peerInfo.channel = 0;
+    peerInfo.encrypt = false;
+
+    if (esp_now_add_peer(&peerInfo) != ESP_OK) {
+        Serial.println("Failed to add master as peer!");
+    }
+
+    Serial.println("ESP-NOW Initialized, Ready to Detect Fire!");
+    updateLEDs();
+}
+
+//  Update LED Colors Based on Fire Detection
+void updateLEDs() {
+    for (int i = 0; i < FLAME_SENSOR_COUNT; i++) {
+        int startIdx = i * 5;
+
+        if (fireDetected[i]) {
+            fill_solid(leds + startIdx, 5, CRGB::Red);  // Fire Detected → Red
+        } else {
+            fill_solid(leds + startIdx, 5, CRGB::Green);  // No Fire → Green (Chasing)
+        }
+    }
+    FastLED.show();
+}
+
+//  Chase Effect Animation
+//  Chase Effect Animation with Steady Red for the Active Sensor
+void chaseEffect(int sensorIndex) {
+    for (int step = 0; step < 5; step++) {  // Run 5-step chase animation
+        FastLED.clear();  // Clear previous frame
+
+        for (int group = 0; group < 6; group++) {  // Update to 6 sensors
+            int startLED = group * 5;
+
+            if (group == sensorIndex) {
+                // Active sensor group stays steady red
+                leds[startLED + 2] = CRGB::Red;  // Light up the center LED in the group red
+            } else if (group < sensorIndex) {
+                // Groups before the sensor chase left in green
+                leds[startLED + (4 - step)] = CRGB::Green;
+            } else {
+                // Groups after the sensor chase right in green
+                leds[startLED + step] = CRGB::Green;
+            }
+        }
+
+        FastLED.show();
+        delay(100);  // Speed of animation
+    }
+}
+
+void loop() {
+    static unsigned long lastUpdate = 0;
+    const int updateInterval = 100;  // Chase effect speed
+
+    int activeSensor = -1;
+    bool anyFireDetected = false;
+
+
+    //  Fire Detection
+    for (int i = 0; i < FLAME_SENSOR_COUNT; i++) {
+        bool newFireStatus = digitalRead(FLAME_SENSOR_PINS[i]) == HIGH;
+
+        if (newFireStatus != fireDetected[i]) {
+            fireDetected[i] = newFireStatus;
+            messageToSend.fireDetected = fireDetected[i];
+            esp_now_send(masterMAC, (uint8_t *)&messageToSend, sizeof(messageToSend));
+        }
+            
+            if (fireDetected[i]) {
+            activeSensor = i;
+            anyFireDetected = true;
+         }
+    }
+
+    //  Run the chase effect continuously while fire is detected
+    if (anyFireDetected && millis() - lastUpdate > updateInterval) {
+        lastUpdate = millis();
+        chaseEffect(activeSensor);
+    } else if (!anyFireDetected) {
+        FastLED.clear();
+        FastLED.show();
+    }
+
+    delay(10);
+}
