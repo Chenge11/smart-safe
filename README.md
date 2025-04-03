@@ -1,3 +1,3 @@
-Master and Slave using ESP
+# Using ESP Now
+Master and Slave ESP
 
-#Using ESP Now
