@@ -1,0 +1,149 @@
+    #include <esp_now.h>
+    #include <WiFi.h>
+    #include <ESP32Servo.h>
+
+    // 🔹 SIM900 GSM Module Configuration
+    #define SIM900 Serial2  // Use Serial2 for SIM900
+    #define RX_PIN 12       // SIM900 TX → ESP32 RX
+    #define TX_PIN 13       // SIM900 RX → ESP32 TX
+
+    //  Slave MAC Addresses (Replace with actual MACs)
+    uint8_t slaveMAC1[] = {0xCC, 0xDB, 0xA7, 0x97, 0x9E, 0xC4};
+    uint8_t slaveMAC2[] = {0x1C, 0x9D, 0xC2, 0xF4, 0x87, 0x80};
+    uint8_t slaveMAC3[] = {0xCC, 0xDB, 0xA7, 0x92, 0xB1, 0x14};
+    uint8_t slaveMAC4[] = {0x20, 0x43, 0xA8, 0x6B, 0x14, 0xC8};
+
+    //  Servo Setup
+    Servo servos[6];
+    const int servoPins[6] = {4, 16, 17, 5, 18, 19}; // Update with actual servo pins
+    bool servosActivated = false;
+
+    // 📡 ESP-NOW Message Struct
+    typedef struct {
+        bool fireDetected;
+    } message_t;
+    message_t receivedMessage;
+
+    // 📥 Data Received Callback
+    void onDataReceived(const esp_now_recv_info_t *info, const uint8_t *data, int len) {
+        memcpy(&receivedMessage, data, sizeof(receivedMessage));
+        
+        if (receivedMessage.fireDetected) {
+            activateServos();
+            Serial.println(" Fire Detected! Moving Servos");
+            sendSMS("Fire detected! Take action immediately!"); // Send SMS Alert
+
+        } else {
+            resetServos();
+            Serial.println(" No Fire! Resetting Servos");
+        }
+    }
+
+    //  Data Sent Callback
+    void onDataSent(const uint8_t *mac_addr, esp_now_send_status_t status) {
+        Serial.print("Message Sent: ");
+        Serial.println(status == ESP_NOW_SEND_SUCCESS ? "Success" : "Fail");
+    }
+
+    //  Add Peer Function
+    void addPeer(uint8_t *mac) {
+        esp_now_peer_info_t peerInfo = {};
+        memcpy(peerInfo.peer_addr, mac, 6);
+        peerInfo.channel = 0;
+        peerInfo.encrypt = false;
+        esp_now_del_peer(mac);
+        esp_now_add_peer(&peerInfo);
+    }
+
+    void setup() {
+        Serial.begin(115200);
+        WiFi.mode(WIFI_STA);
+
+        // Initialize SIM900 GSM Module
+        SIM900.begin(4800, SERIAL_8N1, RX_PIN, TX_PIN);
+        delay(2000);
+
+        // Check SIM900 Connection
+        SIM900.println("AT"); 
+        delay(1000);
+        if (SIM900.available()) {
+            Serial.println("✅ SIM900 Ready");
+        } else {
+            Serial.println("❌ SIM900 Not Responding");
+        }
+        
+        // Attach Servos
+        for (int i = 0; i < 6; i++) {
+            servos[i].attach(servoPins[i]);
+            servos[i].write(0); // Start at 0°
+        }
+        
+        // Initialize ESP-NOW
+        if (esp_now_init() != ESP_OK) {
+            Serial.println("ESP-NOW Initialization Failed!");
+            return;
+        }
+        
+        esp_now_register_recv_cb(onDataReceived);
+        esp_now_register_send_cb(onDataSent);
+        
+        addPeer(slaveMAC1);
+        addPeer(slaveMAC2);
+        addPeer(slaveMAC3);
+        addPeer(slaveMAC4);
+
+        
+        Serial.println("ESP-NOW Initialized");
+    }
+
+    void loop() {
+        // Nothing needed here; ESP-NOW handles data reception
+    }
+
+    //  Move Servos
+    void activateServos() {
+        if (!servosActivated) {
+            for (int i = 0; i < 6; i++) {
+                servos[i].write(90);
+            }
+            servosActivated = true;
+        }
+    }
+
+    //  Reset Servos
+    void resetServos() {
+        if (servosActivated) {
+            for (int i = 0; i < 6; i++) {
+                servos[i].write(0);
+            }
+            servosActivated = false;
+        }
+    }
+
+    // 🔹 Send SMS Alert
+    void sendSMS(String message) {
+        Serial.println("📡 Sending SMS...");
+
+        SIM900.println("AT+CMGF=1"); // Set SMS mode to text
+        Serial.println("AT+CMGF=1"); // debug print
+        delay(1000);
+
+        SIM900.println("AT+CSCS=\"GSM\""); // Force GSM character encoding para mo send jud sa sakto na text alert
+        Serial.println("AT+CSCS=\"GSM\""); // Debug print
+        delay(1000);
+
+        SIM900.println("AT+CMGS=\"+639292320904\""); // Replace with actual phone number
+        Serial.println("AT+CMGS=\"+639292320904\""); // debug print
+        delay(2000);
+
+        SIM900.print(message + "\r\n");
+        Serial.println("Meesage Sent: ");
+        Serial.println(message);
+        delay(1000);
+
+        SIM900.write(26); // ASCII code for CTRL+Z to send message
+        Serial.println("CTRL+Z Sent");  // Debug print
+        delay(7000);
+
+        Serial.println("✅ SMS Sent!");
+    }
